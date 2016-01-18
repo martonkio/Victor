@@ -14,57 +14,45 @@
     along with Victor.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-
 // Includes:
-#include <PdbLoader.h>
-#include <IoTools.h>
-#include <vector3.h>
-#include <AtomCode.h>
-#include <AminoAcid.h>
-#include <String2Number.h>
-#include <Ligand.h>
-#include <Nucleotide.h>
-#include <AminoAcidHydrogen.h>
+#include <CIFLoader.h>
+#include <CIFFileManager.h>
 
-#include <StringUtils.h>
+using namespace std;
+using namespace Victor;
+using namespace Victor::Biopool;
 
-// Global constants, typedefs, etc. (to avoid):
+CIFLoader::CIFLoader(istream& _input, bool _permissive, bool _noHAtoms,
+        bool _noHetAtoms, bool _noSecondary, bool _noConnection, bool _noWater,
+        bool _verb, bool _allChains, string _NULL, bool _onlyMetal,
+        bool _noNucleotideChains)
+: input(_input), permissive(_permissive), valid(true),
+noHAtoms(_noHAtoms), noHetAtoms(_noHetAtoms), noSecondary(_noSecondary),
+noConnection(_noConnection), noWater(_noWater), verbose(_verb),
+allChains(_allChains), chain(' '), model(999), altAtom('A'), helixCode(_NULL),
+sheetCode(_NULL), onlyMetalHetAtoms(_onlyMetal), noNucleotideChains(_noNucleotideChains) {
+    //PrintOut("CIFLoader()");
+    cifFM = new CIFFileManager(_input);
+    cifFM->Init();
+}
 
-using namespace Victor; using namespace Victor::Biopool;
+unsigned int CIFLoader::getMaxModels() {
 
-// CONSTRUCTORS/DESTRUCTOR:
+    unsigned int max = 1;
 
-// PREDICATES:
+    for (int i = 0; i < cifFM->AtomLoop.RowsCount(); i++) {
+        if (cifFM->AtomLoop.GetCellValueTrim(AtomGroupPDB, i) == "ATOM") {
+            unsigned int temp = stouiDEF(cifFM->AtomLoop.GetCellValueTrim(AtomPDBModelNumber, i));
+            if (temp > max)
+                max = temp;
+        }
 
-/**
- *  Reads in the maximum allowed number of NMR models, zero otherwise
- *@param none
- */
-unsigned int
-PdbLoader::getMaxModels() {
-    input.clear(); // reset file to previous content 
-    input.seekg(0);
-
-    unsigned int max = 0;
-
-    while (input) {
-        string atomLine = readLine(input);
-        string tag = atomLine.substr(0, 6);
-
-        if (tag == "MODEL ")
-            max++;
     }
+
     return max;
 }
 
-/**
- *    If user selected a chain, it check validity of this choice,
- *    otherwise it select first available chain.
- *@param   void
- *@return  void
- */
-void
-PdbLoader::checkAndSetChain() {
+void CIFLoader::checkAndSetChain() {
     vector<char> chainList = getAllChains();
     if (chain != ' ') {
         bool validChain = false;
@@ -80,85 +68,38 @@ PdbLoader::checkAndSetChain() {
         chain = chainList[0]; //the first valid chain is default choice
 }
 
-/**
- *    If user selected a Model, it check validity of this choice,
- *    otherwise it select first available chain.
- *@param   void
- *@return  void
- */
-void
-PdbLoader::checkModel() {
+void CIFLoader::checkModel() {
     if ((model != 999)&&(model > getMaxModels())) {
         ERROR("Please check MODEL number", exception);
     }
 }
 
-/**
- *    Reads in the maximum allowed number of NMR models, zero otherwise.
- *    This is a faster version because we only need to read the line with
- *    EXPDTA
- *@param   void
- *@return  unsigned int
- */
-unsigned int
-PdbLoader::getMaxModelsFast() {
-    input.clear();
-    input.seekg(0);
-    while (input) {
-        string line = readLine(input);
-        if (line.substr(0, 6) == "EXPDTA") {
-            istringstream str(line);
-            string header, nmr, structures;
-            unsigned int models;
-            str >> header >> nmr >> models >> structures;
-            return models;
-        }
-    }
+vector<char> CIFLoader::getAllChains() {
 
-    return 0;
-}
-
-/**
- *    Returns all available chain IDs for a PDB file.
- *    
- *@param   void
- *@return  vector of chars
- */
-vector<char>
-PdbLoader::getAllChains() {
+    //PrintOut("CIFLoader::getAllChains()");
     vector<char> res;
-    char lastChain = ' ';
-    input.clear(); // reset file to previous content 
-    input.seekg(0);
-    unsigned int max = 0;
+    char last = ' ';
 
-    while (input) {
-        string atomLine = readLine(input);
-
-        if (atomLine.substr(0, 5) == "MODEL")
-            max++;
-        if (max > 1) // only consider first model: others duplicate chainIDs
+    for (int i = 0; i < cifFM->AtomLoop.RowsCount(); i++) {
+        int modelNumber = stoiDEF(cifFM->AtomLoop.GetCellValueTrim(AtomPDBModelNumber, i));
+        if (modelNumber > 1)
             break;
 
-        // check for new chains containing amino acids
-        if ((atomLine.substr(0, 4) == "ATOM")
-                && (atomLine.substr(21, 1)[0] != lastChain))
-            //&& (aminoAcidThreeLetterTranslator(atomLine.substr(17,3)) != XXX))
-        {
-            lastChain = atomLine.substr(21, 1)[0];
-            res.push_back(lastChain);
+        if (cifFM->AtomLoop.GetCellValueTrim(AtomGroupPDB, i) == "ATOM") {
+            char current = (cifFM->AtomLoop.GetCellValueTrim(AtomChainID, i).c_str())[0];
+
+            if (current != last) {
+                last = current;
+                res.push_back(current);
+            }
         }
     }
 
     return res;
+
 }
 
-/**
- *    Private helper function to set bond structure after loading the spacer.
- *@param   Spacer reference
- *@return  bool
- */
-bool PdbLoader::setBonds(Spacer& sp) {
+bool CIFLoader::setBonds(Spacer& sp) {
     //cout << sp.getAmino(0).getType1L() << "\n";
     sp.getAmino(0).setBondsFromPdbCode(true);
     for (unsigned int i = 1; i < sp.size(); i++) {
@@ -169,29 +110,20 @@ bool PdbLoader::setBonds(Spacer& sp) {
     return true;
 }
 
-/**
- *    Private helper function to determine if atom is backbone or sidechain. 
- *@param   Spacer reference
- *@return  bool
- */
-bool PdbLoader::inSideChain(const AminoAcid& aa, const Atom& at) {
+bool CIFLoader::inSideChain(const AminoAcid& aa, const Atom& at) {
     if (isBackboneAtom(at.getCode()))
         return false;
+
     if ((at.getType() == "H") || (at.getType() == "HN")
             || ((at.getType() == "HA") && (!aa.isMember(HA)))
             || (at.getType() == "1HA") || (at.getType() == "1H")
             || (at.getType() == "2H") || (at.getType() == "3H"))
         return false; // special case for GLY H (code HA)
+
     return true; // rest of aminoacid is its sidechain
 }
 
-
-/**
- *    Try to assigns the secondary structure from the PDB header. If not present
- *  uses Spacer's setStateFromTorsionAngles().
- *@param   Spacer reference
- */
-void PdbLoader::assignSecondary(Spacer& sp) {
+void CIFLoader::assignSecondary(Spacer& sp) {
     if (helixData.size() + sheetData.size() == 0) {
         sp.setStateFromTorsionAngles();
         return;
@@ -219,8 +151,7 @@ void PdbLoader::assignSecondary(Spacer& sp) {
 }
 
 //setOnlyMetalHetAtoms
-void
-PdbLoader::setOnlyMetalHetAtoms() {
+void CIFLoader::setOnlyMetalHetAtoms() {
     if (noHetAtoms) {
         ERROR("can't load metal ions if hetAtoms option is disabled", exception);
     }
@@ -228,48 +159,30 @@ PdbLoader::setOnlyMetalHetAtoms() {
     onlyMetalHetAtoms = true;
     noWater = true;
 }
-//setWater
 
-void
-PdbLoader::setWater() {
+//setWater
+void CIFLoader::setWater() {
     if (noHetAtoms || onlyMetalHetAtoms) {
         ERROR("can't load water if hetAtoms option is disabled\nor onlyMetalHetAtoms is enabled", exception);
     }
     noWater = false;
 }
 
-/*
-void 
-PdbLoader::loadSpacer(Spacer& sp){
-    Protein prot;
-    PdbLoader::loadProtein(prot);
-    sp = prot.getSpacer(0);    
-}
- */
-
-/**
- *   Core function for PDB file parsing. 
- * @param prot (Protein&)
- */
-void
-PdbLoader::loadProtein(Protein& prot) {
+void CIFLoader::loadProtein(Protein& prot) {
     PRINT_NAME;
 
     vector<char> chainList = getAllChains();
-    
+
     if (chainList.size() == 0) {
         if (verbose)
-            cout << "Warning: Missing chain ID in the PDB, assuming the same chain for the entire file.\n";
+            cout << "Warning: Missing chain ID in the CIF, assuming the same chain for the entire file.\n";
         chainList.push_back(char(' '));
     }
 
-
-    unsigned int readingModel = model;
     bool loadChain = false;
 
     helixCode = "";
     sheetCode = "";
-
 
     string path = "data/AminoAcidHydrogenData.txt";
     const char* inputFile = getenv("VICTOR_ROOT");
@@ -277,7 +190,7 @@ PdbLoader::loadProtein(Protein& prot) {
         ERROR("Environment variable VICTOR_ROOT was not found.", exception);
 
     AminoAcidHydrogen::loadParam(((string) inputFile + path).c_str());
-
+    
     for (unsigned int i = 0; i < chainList.size(); i++) {
         loadChain = false;
         // Load all chains
@@ -288,7 +201,7 @@ PdbLoader::loadProtein(Protein& prot) {
             if (chain == ' ') {
                 loadChain = true;
                 chain = '#';
-            }                // Load only selected chain
+            }// Load only selected chain
             else if (chainList[i] == chain) {
                 loadChain = true;
                 chain = '#';
@@ -302,132 +215,27 @@ PdbLoader::loadProtein(Protein& prot) {
             }
             setChain(chainList[i]);
 
-            input.clear(); // reset file to previous content 
-            input.seekg(0, ios::beg);
-
             Spacer* sp = new Spacer();
             LigandSet* ls = new LigandSet();
-
-            string atomLine;
-            atomLine = readLine(input);
-
-            int aaNum = -100000; // infinite negative
-            int oldAaNum = -100000;
-            //int lastAa = -10000;
-
             AminoAcid* aa = new AminoAcid();
             Ligand* lig = new Ligand();
 
+            int aaNum = -100000; // infinite negative
+            int oldAaNum = -100000;
 
-            int start, end;
-
-            string name = "";
-            string tag = "";
-
-            // read all lines
-            do {
-
-                tag = atomLine.substr(0, 6);
-
-                if ((tag == "HEADER") && (name == "")) {
-                    name = atomLine;
-                    sp->setType(name);
-                } else if (tag == "MODEL ") {
-                    readingModel = stouiDEF(atomLine.substr(6, 10));
-                    if (readingModel > model)
-                        break;
-                    // Get only the first model if not specified
-                    if (model == 999) {
-                        model = readingModel;
-                    }
-                }
-
-                    // read helix entry
-                else if (tag == "HELIX ") {
-                    start = stoiDEF(atomLine.substr(21, 4));
-                    end = stoiDEF(atomLine.substr(33, 4));
-
-                    helixData.push_back(pair<const int, int>(start, end));
-                    helixCode += atomLine.substr(19, 1).c_str()[0];
-                }                    // read sheet entry
-                else if (tag == "SHEET ") {
-                    start = stoiDEF(atomLine.substr(22, 4));
-                    end = stoiDEF(atomLine.substr(33, 4));
-
-                    sheetData.push_back(pair<const int, int>(start, end));
-                    sheetCode += atomLine.substr(21, 1).c_str()[0];
-                }
-
-                    // Parse one line of the "ATOM" and "HETATM" fields
-                else if ((tag == "ATOM  ") || (tag == "HETATM")) {
-
-                    char chainID = atomLine.substr(21, 1)[0];
-                    
-                    if (chainList[i] == chainID) {
-                        
-                        if ((model == 999) || (model == readingModel)) {
-                            aaNum = stoiDEF(atomLine.substr(22, 4));
-
-                            // Insert the Ligand object into LigandSet
-                            if (aaNum != oldAaNum) {
-                                // Print some indexes for the debug
-                                /*
-                                cout << aa->getType1L() << " offset:" << sp->getStartOffset() << " gaps:" 
-                                     << sp->sizeGaps() << " sizeAmino:" <<  sp->sizeAmino() <<  " maxPdbNum:" 
-                                     << sp->maxPdbNumber() << " aaNum:" << aaNum  
-                                     << " oldAaNum:" << oldAaNum << endl;
-                                
-                                cout << "aa->size(): " << aa->size() << " - aa->getType1L()" << aa->getClassName() << endl;
-                                 */
-                                
-                                if ((aa->size() > 0) && (aa->getType1L() != 'X')) { // Skip the first empty AminoAcid
-                                    if (sp->sizeAmino() == 0) {
-                                        sp->setStartOffset(oldAaNum - 1);
-                                    } else {
-                                        // Add gaps
-                                        //for (int i = lastAa+1; i < oldAaNum; i++){
-                                        for (int i = sp->maxPdbNumber() + 1; i < oldAaNum; i++) {
-                                            sp->addGap(i);
-                                        }
-                                    }
-
-                                    sp->insertComponent(aa);
-                                }
-
-                                // Ligand
-                                if (lig->size() > 0) {
-
-                                    if (onlyMetalHetAtoms) {
-                                        if (lig->isSimpleMetalIon()) { // skip not metal ions  
-                                            ls->insertComponent(lig);
-                                        }
-                                    } else {
-                                        ls->insertComponent(lig);
-                                    }
-                                }
-
-                                aa = new AminoAcid();
-                                lig = new Ligand();
-                            }
-
-                            oldAaNum = parsePDBline(atomLine, tag, lig, aa);
-
-                        } // end model check
-                    } // end chain check
-                }
-                atomLine = readLine(input);
-
-            } while (input);
-
+            sp->setType(cifFM->GetInLineValue("struct_keywords.pdbx_keywords"));
+            parseHelixData();
+            parseSheetData();
+            parseAtomHetatmData(chainList[i], aaNum, oldAaNum, aa, sp, lig, ls);
             
-            /*
             // Print some indexes for the debug
-            cout << aa->getType1L() << " offset:" << sp->getStartOffset() << " gaps:" 
-                << sp->sizeGaps() << " sizeAmino:" <<  sp->sizeAmino() <<  " maxPdbNum:" 
-                << sp->maxPdbNumber() << " aaNum:" << aaNum  
-                << " oldAaNum:" << oldAaNum << " lastAa:" << lastAa << "\n";
-             */
-            
+            /*
+            cout << aa->getType1L() << " offset:" << sp->getStartOffset() << " gaps:"
+                << sp->sizeGaps() << " sizeAmino:" <<  sp->sizeAmino() <<  " maxPdbNum:"
+                << sp->maxPdbNumber() << " aaNum:" << aaNum
+                << " oldAaNum:" << oldAaNum << "\n";
+            */
+
             // last residue/ligand
             // AminoAcid
             if ((aa->size() > 0) && (aa->getType1L() != 'X')) {
@@ -435,19 +243,17 @@ PdbLoader::loadProtein(Protein& prot) {
                     sp->setStartOffset(oldAaNum - 1);
                 } else {
                     // Add gaps
-                    //for (int i = lastAa+1; i < oldAaNum; i++){
                     for (int i = sp->maxPdbNumber() + 1; i < oldAaNum; i++) {
                         sp->addGap(i);
                     }
                 }
                 sp->insertComponent(aa);
 
-
             }
             // Ligand
             if (lig->size() > 0) {
                 if (onlyMetalHetAtoms) {
-                    if (lig->isSimpleMetalIon()) { // skip not metal ions  
+                    if (lig->isSimpleMetalIon()) { // skip not metal ions
                         ls->insertComponent(lig);
                     }
                 } else {
@@ -550,53 +356,133 @@ PdbLoader::loadProtein(Protein& prot) {
             prot.addChain(chainList[i]);
             prot.insertComponent(pol);
 
-
-
         } // end loadChain
     } // chains iteration
-
 }
 
-/**
- *   Parse a single line of a PDB file.
- * @param atomLine (string) the whole PDB line as it is
- * @param tag (string) = the first field (keyword) in a PDB line
- * @param lig (Ligand) pointer
- * @param aa (AminoAcid) pointer
- * @return Residue number read from the PDB line (int)
- */
-int
-PdbLoader::parsePDBline(string atomLine, string tag, Ligand* lig, AminoAcid* aa) {
+void CIFLoader::parseHelixData() {
+    // read helix entry
 
-    int atNum = stoiDEF(atomLine.substr(6, 5)); // stoi convert from string to int
-    //char altAtID = atomLine.substr(16,1)[0];    // "Alternate location indicator"               
-    int aaNum = stoiDEF(atomLine.substr(22, 4));
-    char altAaID = atomLine.substr(26, 1)[0]; // "Code for insertion of residues"
+    int start, end;
+
+    for (int i = 0; i < cifFM->HelixLoop.RowsCount(); i++) {
+        start = stoiDEF(cifFM->HelixLoop.GetCellValueTrim(HelixStart, i));
+        end = stoiDEF(cifFM->HelixLoop.GetCellValueTrim(HelixEnd, i));
+
+        helixData.push_back(pair<const int, int>(start, end));
+        helixCode += (cifFM->HelixLoop.GetCellValueTrim(HelixCode, i)).c_str()[0];
+    }
+}
+
+void CIFLoader::parseSheetData() {
+    // read sheet entry
+
+    int start, end;
+
+    for (int i = 0; i < cifFM->SheetLoop.RowsCount(); i++) {
+        start = stoiDEF(cifFM->SheetLoop.GetCellValueTrim(SheetStart, i));
+        end = stoiDEF(cifFM->SheetLoop.GetCellValueTrim(SheetEnd, i));
+
+        sheetData.push_back(pair<const int, int>(start, end));
+        sheetCode += (cifFM->SheetLoop.GetCellValueTrim(SheetCode, i)).c_str()[0];
+    }
+}
+
+void CIFLoader::parseAtomHetatmData(const char currentChain, int &aaNum, int &oldAaNum, AminoAcid* aa, Spacer* sp, Ligand* lig, LigandSet* ls) {
+    // Parse one line of the "ATOM" and "HETATM" fields
+
+    unsigned int readingModel = model;
+
+    for (int i = 0; i < cifFM->AtomLoop.RowsCount(); i++) {
+
+        string tag = cifFM->AtomLoop.GetCellValueTrim(AtomGroupPDB, i);
+        char chainID = (cifFM->AtomLoop.GetCellValueTrim(AtomChainID, i).c_str())[0];
+
+        // Get only the first model if not specified
+        readingModel = stouiDEF(cifFM->AtomLoop.GetCellValueTrim(AtomPDBModelNumber, i));
+        
+        if (readingModel > model)
+        {
+            break;
+        }
+        
+        if (model == 999)
+        {
+            model = readingModel;
+        }
+
+        if (currentChain == chainID) {
+            
+            if ((model == 999) || (model == readingModel)) {
+                aaNum = stoiDEF(cifFM->AtomLoop.GetCellValueTrim(AtomSeqID, i));
+
+                // Insert the Ligand object into LigandSet
+                if (aaNum != oldAaNum) {
+                    // Print some indexes for the debug
+                    /*
+                    cout << aa->getType1L() << " offset:" << sp->getStartOffset() << " gaps:"
+                         << sp->sizeGaps() << " sizeAmino:" <<  sp->sizeAmino() <<  " maxPdbNum:"
+                         << sp->maxPdbNumber() << " aaNum:" << aaNum
+                         << " oldAaNum:" << oldAaNum << endl;
+                    cout << "aa->size(): " << aa->size() << " - aa->getType1L()" << aa->getClassName() << endl;
+                    */
+
+                    if ((aa->size() > 0) && (aa->getType1L() != 'X')) { // Skip the first empty AminoAcid
+                        if (sp->sizeAmino() == 0) {
+                            sp->setStartOffset(oldAaNum - 1);
+                        } else {
+                            // Add gaps
+                            for (int i = sp->maxPdbNumber() + 1; i < oldAaNum; i++) {
+                                sp->addGap(i);
+                            }
+                        }
+
+                        sp->insertComponent(aa);
+                    }
+
+                    // Ligand
+                    if (lig->size() > 0) {
+
+                        if (onlyMetalHetAtoms) {
+                            if (lig->isSimpleMetalIon()) { // skip not metal ions
+                                ls->insertComponent(lig);
+                            }
+                        } else {
+                            ls->insertComponent(lig);
+                        }
+                    }
+
+                    aa = new AminoAcid();
+                    lig = new Ligand();
+                }
+
+                oldAaNum = parseCIFline(i, tag, lig, aa);
+
+            } // end model check
+        } // end chain check
+    }
+}
+
+int CIFLoader::parseCIFline(int atomLineIndex, string tag, Ligand* lig, AminoAcid * aa) {
+    
+    int atNum = stoiDEF(cifFM->AtomLoop.GetCellValueTrim(AtomID, atomLineIndex)); // stoi convert from string to int
+    int aaNum = stoiDEF(cifFM->AtomLoop.GetCellValueTrim(AtomSeqID, atomLineIndex));
+    char altAaID = (cifFM->AtomLoop.GetCellValueTrim(AtomInsCode, atomLineIndex)).c_str()[0]; // "Code for insertion of residues"
+    if (altAaID == '?')
+    {
+        altAaID = ' ';
+    }
+    
     vgVector3<double> coord;
-    coord.x = stodDEF(atomLine.substr(30, 8));
-    coord.y = stodDEF(atomLine.substr(38, 8));
-    coord.z = stodDEF(atomLine.substr(46, 8));
-    double bfac = 0.0;
-    if (atomLine.length() >= 66) {
-        if (atomLine.substr(60, 6) != "      ") { // empty bfac
-            bfac = stodDEF(atomLine.substr(60, 6));
-        }
-    }
-    string atType = "";
-    for (int i = 11; i < 17; i++) {
-        if (atomLine[i] != ' ')
-        {
-            atType.append(atomLine.substr(i, 1));
-        }
-    }
+    coord.x = stodDEF(cifFM->AtomLoop.GetCellValueTrim(AtomX, atomLineIndex));
+    coord.y = stodDEF(cifFM->AtomLoop.GetCellValueTrim(AtomY, atomLineIndex));
+    coord.z = stodDEF(cifFM->AtomLoop.GetCellValueTrim(AtomZ, atomLineIndex));
 
-    string aaType = "";
-    for (int i = 17; i < 20; i++) {
-        if (atomLine[i] != ' ')
-        {
-            aaType.append(atomLine.substr(i, 1));
-        }
-    }
+    double bfac = stodDEF(cifFM->AtomLoop.GetCellValueTrim(AtomBFact, atomLineIndex));
+
+    string atType = cifFM->AtomLoop.GetCellValueTrim(AtomName, atomLineIndex);
+    string aaType = cifFM->AtomLoop.GetCellValueTrim(AtomResidueName, atomLineIndex);
+
     // take care of deuterium atoms
     if (atType == "D") {
         cerr << "--> " << atType << "\n";
@@ -604,16 +490,16 @@ PdbLoader::parsePDBline(string atomLine, string tag, Ligand* lig, AminoAcid* aa)
     }
 
     //cout << "atNum:" << atNum << " - aaNum:" << aaNum << " - altAaID:" << altAaID << " - coord.x:" << coord.x << " - coord.y:" << coord.y << " - coord.z:" << coord.z << " - bfac:" << bfac << " - atType:" << atType << " - aaType:" << aaType<< " - TAG:" << tag << endl;
-    
+        
     // Initialize the Atom object
     Atom* at = new Atom();
     at->setNumber(atNum);
     at->setType(atType);
     at->setCoords(coord);
-    at->setOccupancy(stodDEF(atomLine.substr(54, 6)));
+    at->setOccupancy(stodDEF(cifFM->AtomLoop.GetCellValueTrim(AtomOccupancy, atomLineIndex)));
     at->setBFac(bfac);
 
-    // Ligand object (includes DNA/RNA in "ATOM" field)
+    //Ligand object(includes DNA / RNA in "ATOM" field)
     if ((tag == "HETATM") || isKnownNucleotide(nucleotideThreeLetterTranslator(aaType))) {
 
         if (noWater) {
@@ -625,14 +511,14 @@ PdbLoader::parsePDBline(string atomLine, string tag, Ligand* lig, AminoAcid* aa)
             lig->addAtom(*at);
             lig->setType(aaType);
         }
-    }        // AminoAcid
-    else if ((tag == "ATOM  ")) {
+    }// AminoAcid
+    else if ((tag == "ATOM")) {
 
         // skip N-terminal ACE groups
         if (aaType != "ACE") {
 
             // DEBUG: it would be nice to load also alternative atoms
-            // skip alternative atoms, 
+            // skip alternative atoms,
             if (altAaID != ' ') {
                 if (verbose)
                     cout << "Warning: Skipping extraneous amino acid entry " << aaNum << " " << atNum << " " << altAaID << ".\n";
@@ -641,7 +527,6 @@ PdbLoader::parsePDBline(string atomLine, string tag, Ligand* lig, AminoAcid* aa)
                 aa->getSideChain().setType(aaType);
 
                 if (!noHAtoms || isHeavyAtom(at->getCode())) {
-
                     if (!inSideChain(*aa, *at))
                     {
                         aa->addAtom(*at);
